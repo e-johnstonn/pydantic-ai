@@ -25,6 +25,18 @@ def on_page_markdown(markdown: str, page: Page, config: Config, files: Files) ->
     return markdown
 
 
+def on_post_page(output: str, page: Page, config: Config) -> str:
+    markdown = page.markdown
+    if markdown is None:
+        return output
+
+    markdown_path = Path(config['site_dir']) / page.file.dest_uri
+    markdown_path = markdown_path.with_suffix('.md')
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(markdown, encoding='utf-8')
+    return output
+
+
 # path to the main mkdocs material bundle file, found during `on_env`
 bundle_path: Path | None = None
 

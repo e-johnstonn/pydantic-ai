@@ -274,6 +274,7 @@ extra_javascript:
   - "https://cdn.jsdelivr.net/npm/algoliasearch@5.20.0/dist/lite/builds/browser.umd.js"
   - "https://cdn.jsdelivr.net/npm/instantsearch.js@4.77.3/dist/instantsearch.production.min.js"
   - "/javascripts/algolia-search.js"
+  - "javascripts/copy-markdown.js"
 
 markdown_extensions:
   - tables
