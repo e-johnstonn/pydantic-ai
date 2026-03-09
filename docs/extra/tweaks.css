@@ -81,6 +81,7 @@ img.index-header {
 }
 
 .pydantic-copy-markdown-button {
+  -webkit-appearance: none;
   align-items: center;
   background-color: var(--md-default-bg-color);
   border: 0.05rem solid var(--md-default-fg-color--lightest);
@@ -88,6 +89,7 @@ img.index-header {
   color: var(--md-default-fg-color--light);
   cursor: pointer;
   display: inline-flex;
+  font-family: inherit;
   font-size: 0.64rem;
   gap: 0.25rem;
   justify-content: center;

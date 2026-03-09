@@ -1,17 +1,37 @@
 from __future__ import annotations as _annotations
 
+import html as html_lib
 import re
 import time
 import urllib.parse
+from itertools import chain
 from pathlib import Path
 
+import mdformat
+from bs4 import BeautifulSoup as Soup, NavigableString, Tag
 from jinja2 import Environment
+from markdownify import ATX, MarkdownConverter
 from mkdocs.config import Config
 from mkdocs.structure.files import Files
 from mkdocs.structure.pages import Page
 from snippets import inject_snippets
 
 DOCS_ROOT = Path(__file__).parent.parent
+
+
+def _copy_markdown_language(tag: Tag) -> str:
+    for css_class in chain(tag.get('class') or (), (tag.parent.get('class') or ()) if tag.parent else ()):
+        if css_class.startswith('language-'):
+            return css_class[9:]
+    return ''
+
+
+_COPY_MARKDOWN_CONVERTER = MarkdownConverter(
+    bullets='-',
+    code_language_callback=_copy_markdown_language,
+    escape_underscores=False,
+    heading_style=ATX,
+)
 
 
 def on_page_markdown(markdown: str, page: Page, config: Config, files: Files) -> str:
@@ -25,16 +45,154 @@ def on_page_markdown(markdown: str, page: Page, config: Config, files: Files) ->
     return markdown
 
 
+def on_page_content(html: str, page: Page, config: Config, files: Files) -> str:
+    markdown_path = _copy_markdown_path(page.file.dest_uri)
+    if markdown_path is None:
+        return html
+
+    page.meta['_copy_markdown_content'] = _render_copy_markdown(html, page, config)
+    page.meta['copy_markdown_path'] = markdown_path
+    return html
+
+
 def on_post_page(output: str, page: Page, config: Config) -> str:
-    markdown = page.markdown
-    if markdown is None:
+    markdown = page.meta.pop('_copy_markdown_content', None)
+    if not isinstance(markdown, str):
         return output
 
-    markdown_path = Path(config['site_dir']) / page.file.dest_uri
-    markdown_path = markdown_path.with_suffix('.md')
+    markdown_path = _copy_markdown_path(page.file.dest_uri)
+    if markdown_path is None:
+        return output
+
+    markdown_path = Path(config['site_dir']) / markdown_path
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(markdown, encoding='utf-8')
     return output
+
+
+def _copy_markdown_path(dest_uri: str) -> str | None:
+    if not dest_uri.endswith('.html'):
+        return None
+    return Path(dest_uri).with_suffix('.md').as_posix()
+
+
+def _render_copy_markdown(html: str, page: Page, config: Config) -> str:
+    soup = Soup(html, 'html.parser')
+    _prepare_copy_markdown_soup(soup, page)
+    _convert_copy_markdown_links_to_absolute(soup, config['site_url'], page.file.dest_uri)
+    return mdformat.text(
+        _COPY_MARKDOWN_CONVERTER.convert_soup(soup),
+        options={'wrap': 'no'},
+        extensions=('tables',),
+    )
+
+
+def _prepare_copy_markdown_soup(soup: Soup, page: Page) -> None:
+    if soup.find('h1') is None and page.title is not None:
+        title = soup.new_tag('h1')
+        title.string = str(page.title)
+        soup.insert(0, title)
+
+    for tabbed_set in soup.find_all('div', class_='tabbed-set'):
+        _flatten_tabbed_set(soup, tabbed_set)
+
+    for filename in soup.find_all('span', class_='filename'):
+        filename.name = 'p'
+        filename['class'] = ['code-title']
+
+    _autoclean_copy_markdown_soup(soup)
+
+
+def _flatten_tabbed_set(soup: Soup, tabbed_set: Tag) -> None:
+    labels = [label.get_text(' ', strip=True) for label in tabbed_set.select('.tabbed-labels > label')]
+    blocks = tabbed_set.select('.tabbed-content > .tabbed-block')
+
+    replacement = soup.new_tag('div')
+    if labels and len(labels) == len(blocks):
+        for label, block in zip(labels, blocks):
+            title = soup.new_tag('p')
+            strong = soup.new_tag('strong')
+            strong.string = label
+            title.append(strong)
+            replacement.append(title)
+            for child in list(block.contents):
+                replacement.append(child.extract())
+    else:
+        for child in list(tabbed_set.contents):
+            replacement.append(child.extract())
+
+    tabbed_set.replace_with(replacement)
+
+
+def _autoclean_copy_markdown_soup(soup: Soup) -> None:
+    for element in soup.find_all(_should_remove_from_copy_markdown):
+        element.decompose()
+
+    for element in soup.find_all('autoref'):
+        element.replace_with(NavigableString(element.get_text()))
+
+    for element in soup.find_all('div', class_='doc-md-description'):
+        element.replace_with(NavigableString(element.get_text().strip()))
+
+    for element in soup.find_all('span', class_='doc-labels'):
+        element.decompose()
+
+    for element in soup.find_all('table', class_='highlighttable'):
+        code = element.find('code')
+        if code is None:
+            continue
+        element.replace_with(Soup(f'<pre>{html_lib.escape(code.get_text())}</pre>', 'html.parser'))
+
+
+def _should_remove_from_copy_markdown(tag: Tag) -> bool:
+    if tag.name in {'form', 'img', 'svg'}:
+        return True
+
+    if tag.name == 'a' and tag.find(['img', 'svg']) is not None:
+        return True
+
+    classes = tag.get('class') or ()
+    if tag.name == 'a' and 'headerlink' in classes:
+        return True
+    if 'twemoji' in classes:
+        return True
+    if 'tabbed-labels' in classes:
+        return True
+    if tag.name == 'details' and 'mkdocstrings-source' in classes:
+        return True
+
+    return False
+
+
+def _convert_copy_markdown_links_to_absolute(soup: Soup, base_uri: str, page_uri: str) -> None:
+    current_dir = Path(page_uri).parent.as_posix()
+
+    for link in soup.find_all('a', href=True):
+        href = link.get('href')
+        if not isinstance(href, str) or not href:
+            continue
+        link['href'] = _convert_copy_markdown_link_to_absolute(href, base_uri, current_dir)
+
+
+def _convert_copy_markdown_link_to_absolute(href: str, base_uri: str, current_dir: str) -> str:
+    if href.startswith('/') or href.startswith('#'):
+        return href
+
+    try:
+        if urllib.parse.urlsplit(href).scheme:
+            return href
+    except ValueError:
+        return href
+
+    relative_base = urllib.parse.urljoin(base_uri, current_dir + '/') if current_dir else base_uri
+    final_href = urllib.parse.urljoin(relative_base, href)
+    parsed_href = urllib.parse.urlsplit(final_href)
+    path = parsed_href.path
+    if path.endswith('/'):
+        path += 'index.md'
+    elif not Path(path).suffix:
+        path += '/index.md'
+    return urllib.parse.urlunsplit(parsed_href._replace(path=path))
 
 
 # path to the main mkdocs material bundle file, found during `on_env`

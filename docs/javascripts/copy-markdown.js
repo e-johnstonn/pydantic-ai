@@ -5,24 +5,7 @@ const COPY_MARKDOWN_LABELS = {
   error: 'Copy failed',
 }
 
-const COPY_BUTTON_SELECTOR = '[data-pydantic-copy-markdown]'
-
-function markdownPathFromLocation(pathname) {
-  if (pathname.endsWith('/')) {
-    return `${pathname}index.md`
-  }
-
-  if (pathname.endsWith('.html')) {
-    return pathname.replace(/\.html$/, '.md')
-  }
-
-  return `${pathname}/index.md`
-}
-
-function markdownUrlForCurrentPage() {
-  const path = markdownPathFromLocation(window.location.pathname)
-  return new URL(path, window.location.origin)
-}
+const COPY_BUTTON_SELECTOR = '[data-pydantic-copy-markdown-url]'
 
 function setCopyButtonState(button, state) {
   const label = COPY_MARKDOWN_LABELS[state]
@@ -47,7 +30,12 @@ async function copyPageMarkdown(button) {
   setCopyButtonState(button, 'pending')
 
   try {
-    const response = await fetch(markdownUrlForCurrentPage())
+    const markdownUrl = button.dataset.pydanticCopyMarkdownUrl
+    if (!markdownUrl) {
+      throw new Error('Missing markdown URL')
+    }
+
+    const response = await fetch(markdownUrl)
     if (!response.ok) {
       throw new Error(`Failed to fetch markdown: ${response.status}`)
     }
@@ -67,34 +55,17 @@ async function copyPageMarkdown(button) {
 }
 
 function initCopyMarkdownAction(root = document) {
-  const contentInner = root.querySelector('article.md-content__inner')
-  if (!contentInner || contentInner.querySelector(COPY_BUTTON_SELECTOR)) {
-    return
+  for (const button of root.querySelectorAll(COPY_BUTTON_SELECTOR)) {
+    if (button.dataset.pydanticCopyMarkdownBound === 'true') {
+      continue
+    }
+
+    button.dataset.pydanticCopyMarkdownBound = 'true'
+    setCopyButtonState(button, 'idle')
+    button.addEventListener('click', async () => {
+      await copyPageMarkdown(button)
+    })
   }
-
-  const action = document.createElement('div')
-  action.className = 'md-content__button'
-
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.className = 'pydantic-copy-markdown-button'
-  button.dataset.pydanticCopyMarkdown = 'true'
-  button.innerHTML = `
-    <span class="md-icon pydantic-copy-markdown-icon" aria-hidden="true">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-        <path d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12z"/>
-      </svg>
-    </span>
-    <span class="pydantic-copy-markdown-label"></span>
-  `
-  setCopyButtonState(button, 'idle')
-
-  button.addEventListener('click', async () => {
-    await copyPageMarkdown(button)
-  })
-
-  action.append(button)
-  contentInner.prepend(action)
 }
 
 if (typeof document$ !== 'undefined') {
